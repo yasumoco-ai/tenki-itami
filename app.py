@@ -34,7 +34,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🌀 低気圧お知らせアプリ")
-st.caption("気圧の急降下を48時間先まで予測して、天気痛・頭痛・倦怠感を事前にお知らせします。")
+st.markdown(
+    "<p style='font-size:1.05rem; color:#555; margin-top:-8px'>"
+    "頭痛が来る前に、空を読む。"
+    "</p>",
+    unsafe_allow_html=True,
+)
 
 
 # ── ユーティリティ ─────────────────────────────────────────────
@@ -183,7 +188,17 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
         st.error(f"データ取得に失敗しました：{e}")
 
 st.divider()
-st.caption(
-    "気象データ：[Open-Meteo](https://open-meteo.com/)（無料・商用利用可）　"
-    "⚠️ 本アプリは医療情報ではありません。体調が優れない場合は医師にご相談ください。"
+st.markdown(
+    """
+    <div style="text-align:center; padding:12px 0 4px">
+      <span style="font-size:0.8rem; color:#aaa; letter-spacing:0.05em">
+        気象データ：<a href="https://open-meteo.com/" target="_blank" style="color:#aaa">Open-Meteo</a>
+        ⚠️ 本アプリは医療情報ではありません
+      </span><br>
+      <span style="font-size:0.95rem; color:#888; font-weight:bold; letter-spacing:0.12em; margin-top:6px; display:inline-block">
+        制作監督　波を出す
+      </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
