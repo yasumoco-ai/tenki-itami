@@ -12,6 +12,27 @@ LEVEL_DANGER  = -6   # hPa  危険
 LEVEL_CAUTION = -3   # hPa  注意
 
 st.set_page_config(page_title="低気圧お知らせアプリ", page_icon="🌀", layout="centered")
+
+# モバイル向けCSS
+st.markdown("""
+<style>
+/* フォントサイズ・余白をスマホ向けに調整 */
+@media (max-width: 640px) {
+    h1 { font-size: 1.4rem !important; }
+    .stMetric label { font-size: 0.75rem !important; }
+    .stMetric [data-testid="metric-container"] { padding: 8px !important; }
+    .block-container { padding: 1rem 0.75rem !important; }
+}
+/* メトリクスカードをタイル風に */
+[data-testid="metric-container"] {
+    background: #f8f9fa;
+    border-radius: 10px;
+    padding: 10px;
+    text-align: center;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🌀 低気圧お知らせアプリ")
 st.caption("気圧の急降下を48時間先まで予測して、天気痛・頭痛・倦怠感を事前にお知らせします。")
 
@@ -82,14 +103,15 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
         worst_change = worst_row["change_6h"]
         label, color, advice = warning_level(worst_change)
 
-        col1, col2, col3 = st.columns(3)
+        # スマホで見やすいよう 2+1 配置
+        col1, col2 = st.columns(2)
         with col1:
             st.metric("現在の気圧", f"{now_row['pressure']:.1f} hPa")
         with col2:
             worst_time = worst_row["time"].strftime("%m/%d %H:%M")
             st.metric("最大降下タイミング", worst_time)
-        with col3:
-            st.metric("最大降下量（6h）", f"{worst_change:+.1f} hPa")
+        st.metric("最大降下量（6時間）", f"{worst_change:+.1f} hPa",
+                  delta_color="inverse")
 
         # ── 警告バナー ──────────────────────────────────────
         st.markdown(
@@ -146,14 +168,12 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
             time_str = row["time"].strftime("%m/%d %H:%M")
             chg = row["change_6h"]
             st.markdown(
-                f"""<div style="display:flex; align-items:center; gap:12px;
-                padding:6px 12px; border-radius:6px; margin:4px 0;
-                background:{cl}15; border-left:4px solid {cl}">
-                <span style="min-width:110px; font-weight:bold">{time_str}</span>
-                <span style="min-width:90px">{row['pressure']:.1f} hPa</span>
-                <span style="min-width:110px; color:{cl}; font-weight:bold">
-                  {chg:+.1f} hPa/6h</span>
-                <span>{lv}</span></div>""",
+                f"""<div style="padding:10px 14px; border-radius:8px; margin:6px 0;
+                background:{cl}15; border-left:5px solid {cl}">
+                <div style="font-weight:bold; font-size:1rem">{lv}　{time_str}</div>
+                <div style="font-size:0.9rem; margin-top:4px; color:#555">
+                  気圧 {row['pressure']:.1f} hPa　変化 <b style="color:{cl}">{chg:+.1f} hPa/6h</b>
+                </div></div>""",
                 unsafe_allow_html=True,
             )
 
