@@ -2,28 +2,30 @@ import requests
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+from streamlit_autorefresh import st_autorefresh
 
 JST = pytz.timezone("Asia/Tokyo")
 
-# ── 気圧変化の警告レベル（6時間あたりの降下量） ───────────────
-LEVEL_DANGER  = -6   # hPa  危険
-LEVEL_CAUTION = -3   # hPa  注意
+LEVEL_DANGER  = -6
+LEVEL_CAUTION = -3
+ALERT_AHEAD_H = 1  # 何時間前にアラームを鳴らすか
 
 st.set_page_config(page_title="低気圧お知らせアプリ", page_icon="🌀", layout="centered")
+
+# 10分ごとに自動更新
+st_autorefresh(interval=10 * 60 * 1000, key="pressure_refresh")
 
 # モバイル向けCSS
 st.markdown("""
 <style>
-/* フォントサイズ・余白をスマホ向けに調整 */
 @media (max-width: 640px) {
     h1 { font-size: 1.4rem !important; }
     .stMetric label { font-size: 0.75rem !important; }
     .stMetric [data-testid="metric-container"] { padding: 8px !important; }
     .block-container { padding: 1rem 0.75rem !important; }
 }
-/* メトリクスカードをタイル風に */
 [data-testid="metric-container"] {
     background: #f8f9fa;
     border-radius: 10px;
@@ -42,7 +44,6 @@ st.markdown(
 )
 
 
-# ── ユーティリティ ─────────────────────────────────────────────
 def geocode(city: str) -> tuple[float, float, str]:
     url = "https://geocoding-api.open-meteo.com/v1/search"
     r = requests.get(url, params={"name": city, "language": "ja", "count": 1}, timeout=10)
@@ -73,16 +74,13 @@ def fetch_pressure(lat: float, lon: float) -> pd.DataFrame:
         "time": pd.to_datetime(data["hourly"]["time"]),
         "pressure": data["hourly"]["surface_pressure"],
     })
-    # 今から48時間分に絞る
     now = datetime.now(JST).replace(tzinfo=None)
     df = df[df["time"] >= now].head(49).reset_index(drop=True)
-    # 6時間後との差（マイナス = 降下）
     df["change_6h"] = df["pressure"].shift(-6) - df["pressure"]
     return df
 
 
 def warning_level(change: float) -> tuple[str, str, str]:
-    """(ラベル, 色, アドバイス) を返す"""
     if change <= LEVEL_DANGER:
         return "🔴 危険", "#FF4B4B", "頭痛薬・酔い止めを準備。無理な外出は避け、こまめに休憩を。"
     if change <= LEVEL_CAUTION:
@@ -90,7 +88,63 @@ def warning_level(change: float) -> tuple[str, str, str]:
     return "🟢 安全", "#21BA45", "気圧は安定しています。いつも通りの生活でOKです。"
 
 
-# ── UI ────────────────────────────────────────────────────────
+def check_upcoming_alert(df: pd.DataFrame) -> tuple[bool, str, str, str]:
+    """1時間後に警告レベルになる予定かチェック。(要アラーム, ラベル, 色, アドバイス)"""
+    now = datetime.now(JST).replace(tzinfo=None)
+    target_start = now + timedelta(hours=ALERT_AHEAD_H - 0.5)
+    target_end   = now + timedelta(hours=ALERT_AHEAD_H + 0.5)
+    window = df[(df["time"] >= target_start) & (df["time"] <= target_end)]
+    for _, row in window.iterrows():
+        if pd.isna(row["change_6h"]):
+            continue
+        if row["change_6h"] <= LEVEL_CAUTION:
+            lv, cl, adv = warning_level(row["change_6h"])
+            return True, lv, cl, adv
+    return False, "", "", ""
+
+
+def inject_alarm(level_label: str, advice: str, color: str):
+    """ブラウザ通知＋アラーム音をJavaScriptで実行。"""
+    js = f"""
+    <script>
+    (function() {{
+        // ── アラーム音（Web Audio API） ──
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        function beep(freq, start, duration) {{
+            var osc  = ctx.createOscillator();
+            var gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.4, ctx.currentTime + start);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration);
+            osc.start(ctx.currentTime + start);
+            osc.stop(ctx.currentTime + start + duration);
+        }}
+        beep(660, 0.0, 0.4);
+        beep(550, 0.5, 0.4);
+        beep(660, 1.0, 0.6);
+
+        // ── ブラウザ通知 ──
+        var title = "🌀 低気圧アラーム";
+        var body  = "1時間後に {level_label} の時間帯が始まります。\\n{advice}";
+        if (window.Notification) {{
+            if (Notification.permission === 'granted') {{
+                new Notification(title, {{ body: body }});
+            }} else if (Notification.permission !== 'denied') {{
+                Notification.requestPermission().then(function(p) {{
+                    if (p === 'granted') new Notification(title, {{ body: body }});
+                }});
+            }}
+        }}
+    }})();
+    </script>
+    """
+    st.markdown(js, unsafe_allow_html=True)
+
+
+# ── メインUI ──────────────────────────────────────────────────
 city = st.text_input("地名を入力（例：恵庭、札幌、東京）", value="恵庭")
 
 if st.button("🔍 予報を取得", type="primary", use_container_width=True) or city:
@@ -99,26 +153,40 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
             lat, lon, place_name = geocode(city)
             df = fetch_pressure(lat, lon)
 
-        st.success(f"📍 {place_name} の気圧予報（48時間）")
+        st.success(f"📍 {place_name} の気圧予報（48時間）　※10分ごとに自動更新")
 
-        # ── 現在の状況 ─────────────────────────────────────
+        # ── 1時間前アラームチェック ────────────────────────────
+        need_alarm, alv, acl, aadv = check_upcoming_alert(df)
+        if need_alarm:
+            st.markdown(
+                f"""<div style="background:{acl}33; border:3px solid {acl};
+                border-radius:10px; padding:18px; margin:10px 0; text-align:center">
+                <div style="font-size:1.8rem">🚨 アラーム</div>
+                <div style="font-size:1.2rem; font-weight:bold; color:{acl}">
+                  約1時間後に {alv} の時間帯が始まります
+                </div>
+                <div style="margin-top:8px">{aadv}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            inject_alarm(alv, aadv, acl)
+
+        # ── 現在の状況 ─────────────────────────────────────────
         now_row = df.iloc[0]
         worst_idx = df["change_6h"].idxmin()
         worst_row = df.loc[worst_idx]
         worst_change = worst_row["change_6h"]
         label, color, advice = warning_level(worst_change)
 
-        # スマホで見やすいよう 2+1 配置
         col1, col2 = st.columns(2)
         with col1:
             st.metric("現在の気圧", f"{now_row['pressure']:.1f} hPa")
         with col2:
             worst_time = worst_row["time"].strftime("%m/%d %H:%M")
             st.metric("最大降下タイミング", worst_time)
-        st.metric("最大降下量（6時間）", f"{worst_change:+.1f} hPa",
-                  delta_color="inverse")
+        st.metric("最大降下量（6時間）", f"{worst_change:+.1f} hPa", delta_color="inverse")
 
-        # ── 警告バナー ──────────────────────────────────────
+        # ── 警告バナー ──────────────────────────────────────────
         st.markdown(
             f"""<div style="background:{color}22; border-left:6px solid {color};
             padding:16px; border-radius:8px; margin:12px 0">
@@ -127,14 +195,10 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
             unsafe_allow_html=True,
         )
 
-        # ── 気圧グラフ ──────────────────────────────────────
+        # ── 気圧グラフ ──────────────────────────────────────────
         fig = go.Figure()
-
-        # 危険帯の背景
         fig.add_hrect(y0=0, y1=df["pressure"].min() - 5,
                       fillcolor="red", opacity=0.05, line_width=0)
-
-        # 気圧折れ線
         fig.add_trace(go.Scatter(
             x=df["time"], y=df["pressure"],
             mode="lines+markers",
@@ -143,8 +207,6 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
             name="気圧 (hPa)",
             hovertemplate="%{x|%m/%d %H:%M}<br>%{y:.1f} hPa<extra></extra>",
         ))
-
-        # 最大降下点をマーク
         fig.add_trace(go.Scatter(
             x=[worst_row["time"]], y=[worst_row["pressure"]],
             mode="markers",
@@ -152,18 +214,15 @@ if st.button("🔍 予報を取得", type="primary", use_container_width=True) o
             name="最大降下点",
             hovertemplate=f"{worst_time}<br>{worst_row['pressure']:.1f} hPa<extra>最大降下点</extra>",
         ))
-
         fig.update_layout(
-            xaxis_title="時刻",
-            yaxis_title="気圧 (hPa)",
-            hovermode="x unified",
-            height=350,
+            xaxis_title="時刻", yaxis_title="気圧 (hPa)",
+            hovermode="x unified", height=350,
             margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # ── 時間別一覧（6時間ごと） ─────────────────────────
+        # ── 時間帯別一覧（6時間ごと） ───────────────────────────
         st.markdown("#### 時間帯別の警告レベル")
         step_df = df.iloc[::6].copy()
         for _, row in step_df.iterrows():
